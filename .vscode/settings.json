@@ -70,5 +70,9 @@
         "tooltip": "PlatformIO: Rebuild IntelliSense Index",
         "commands": "platformio-ide.rebuildProjectIndex"
       }
-    ]
+    ],
+    "cmake.configureOnOpen": true,
+    "files.associations": {
+      "cstddef": "cpp"
+    }
   }

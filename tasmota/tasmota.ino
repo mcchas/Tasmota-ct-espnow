@@ -55,6 +55,14 @@
 #include <JsonParser.h>
 #include <JsonGenerator.h>
 #ifdef ESP8266
+// ESPNOWPATCH
+extern "C" {
+  #include "user_interface.h"
+  #include <espnow.h>
+}
+#include <ESP8266WiFi.h>
+#define WIFI_CHANNEL 1
+// ESPNOWPATCH END
 #ifdef USE_ARDUINO_OTA
 #include <ArduinoOTA.h>                     // Arduino OTA
 #ifndef USE_DISCOVERY
@@ -105,6 +113,10 @@
 
 // Structs
 #include "include/tasmota_types.h"
+
+
+
+
 
 /*********************************************************************************************\
  * Global variables
@@ -392,6 +404,55 @@ LList<char*> backlog;                       // Command backlog implemented with 
  * Main
 \*********************************************************************************************/
 
+
+bool en_ready=false;
+uint8_t en_bri=100;
+uint8_t en_cct=0;
+
+void EspNowPatch() {
+  AddLog(LOG_LEVEL_INFO, PSTR("NOW: Starting ESP-NOW Patch"));
+  AddLog(LOG_LEVEL_INFO, PSTR("NOW: Start time %u ms"), millis());
+  // Serial.println("starting ESPNOW patch");
+  uint8_t remoteDevice[6] = {0x24,0x62,0xAB,0xF1,0xFD,0xAD};
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_now_init();
+  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
+  esp_now_add_peer(remoteDevice, ESP_NOW_ROLE_CONTROLLER, WIFI_CHANNEL, NULL, 0);
+
+  esp_now_register_recv_cb([](uint8_t *mac, uint8_t *data, uint8_t len)
+  {
+    // Serial.printf("ESPNOW Received:: Brightness:%d Warmth:%d\n", data[0], data[1]);
+    AddLog(LOG_LEVEL_INFO, PSTR("NOW: Received data:: Brightness:%d Warmth:%d"), data[0], data[1]);
+    en_ready=true;
+    if (len>=2) {
+      en_bri=data[0];
+      en_cct=data[1];
+    }
+    AddLog(LOG_LEVEL_INFO, PSTR("NOW: Time to receive %u ms"), millis());
+    // Serial.print("ESPNOW rx time: ");
+    // Serial.println(millis());
+  });
+  const uint8_t dataLength=1;
+  uint8_t txrxData[dataLength]={0};
+  unsigned long sendDelay = random(0,4000);
+  delayMicroseconds(sendDelay);
+  esp_now_send(remoteDevice, txrxData, dataLength);
+
+  unsigned long timeNow = millis();
+  while (millis() - timeNow < 50) {
+    yield();
+    if (en_ready) break;
+  }
+  if (!en_ready) {
+    // Serial.println("ESPNOW failed to get response from espnow");
+    AddLog(LOG_LEVEL_ERROR, PSTR("NOW: failed to get response from espnow"));
+  }
+  esp_now_unregister_recv_cb();
+  esp_now_deinit();
+}
+
 void setup(void) {
 #ifdef ESP32
 #ifdef CONFIG_IDF_TARGET_ESP32
@@ -525,7 +586,7 @@ void setup(void) {
 #else   // No ESP32
   // Init command serial console preparing for AddLog use
   Serial.begin(TasmotaGlobal.baudrate);
-  Serial.println();
+  Serial.println("taspatch!");
 //  Serial.setRxBufferSize(INPUT_BUFFER_SIZE);  // Default is 256 chars
   TasConsole = Serial;
 #endif  // ESP32
@@ -652,6 +713,21 @@ void setup(void) {
     s++;
   }
   snprintf_P(TasmotaGlobal.mqtt_topic, sizeof(TasmotaGlobal.mqtt_topic), ResolveToken(TasmotaGlobal.mqtt_topic).c_str());
+
+  EspNowPatch();
+  if (en_ready) {
+    Settings->light_dimmer = en_bri;
+    uint16_t v = map(en_cct, 0, 100, 153, 500);
+    unsigned char *b = (unsigned char *)&v;
+    Settings->light_color[3] = b[1];
+    Settings->light_color[4] = b[0];
+    char cmd1[36];
+    // sprintf(cmd1,"dimmer %d", en_bri);
+    sprintf(cmd1,"Backlog dimmer %d; ct %u", en_bri, v);
+    ExecuteCommand(cmd1, SRC_BACKLOG);
+    AddLog(LOG_LEVEL_INFO, PSTR("NOW: Finish time %u ms"), millis());
+    SleepDelay(20);
+  }
 
   RtcInit();
   GpioInit();                    // FUNC_SETUP_RING1 -> FUNC_SETUP_RING2 -> FUNC_MODULE_INIT -> FUNC_LED_LINK
